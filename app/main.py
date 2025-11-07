@@ -4,8 +4,10 @@ import uuid
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse, Response
 from zoneinfo import ZoneInfo
 
 from . import exposure
@@ -29,7 +31,29 @@ from .schemas import (
 )
 from .store import AvailabilityRule, Booking, SlotInstance, store
 
-app = FastAPI(title="Hair Stylist Scheduler API", version="1.0.0")
+tags_metadata = [
+    {
+        "name": "User",
+        "description": "Public endpoints that surface availability and manage the booking lifecycle.",
+    },
+    {
+        "name": "Admin",
+        "description": "Administrative endpoints for managing availability and bookings.",
+    },
+]
+
+
+app = FastAPI(
+    title="Hair Stylist Scheduler API",
+    version="1.0.0",
+    description=(
+        "APIs for exposing appointment availability to end users while allowing admins to "
+        "manage rules, generate slots, and review bookings."
+    ),
+    openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
 
 async def get_idempotency_key(idempotency_key: str = Header(..., alias="Idempotency-Key")) -> str:
@@ -46,7 +70,7 @@ def _get_user_key(request: Request) -> str:
     return "anonymous"
 
 
-@app.get("/v1/dates", response_model=DateAvailabilityResponse)
+@app.get("/v1/dates", response_model=DateAvailabilityResponse, tags=["User"])
 async def get_dates(
     from_date: date = Query(default=date.today(), alias="from"),
     days: int = Query(default=30, ge=1, le=90),
@@ -82,7 +106,7 @@ async def get_dates(
     )
 
 
-@app.get("/v1/slots", response_model=SlotExposureResponse)
+@app.get("/v1/slots", response_model=SlotExposureResponse, tags=["User"])
 async def get_slots(
     request: Request,
     query: SlotExposureQuery = Depends(),
@@ -144,7 +168,12 @@ async def get_slots(
     )
 
 
-@app.post("/v1/bookings", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/v1/bookings",
+    response_model=BookingResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["User"],
+)
 async def create_booking(
     booking_request: BookingRequest,
     idempotency_key: str = Depends(get_idempotency_key),
@@ -201,7 +230,11 @@ async def create_booking(
     )
 
 
-@app.post("/v1/bookings/{booking_id}/confirm", response_model=BookingConfirmResponse)
+@app.post(
+    "/v1/bookings/{booking_id}/confirm",
+    response_model=BookingConfirmResponse,
+    tags=["User"],
+)
 async def confirm_booking(booking_id: str):
     store.expire_holds()
     try:
@@ -226,7 +259,12 @@ async def confirm_booking(booking_id: str):
     return BookingConfirmResponse(booking_id=booking.id, status=booking.status, slot_id=booking.slot_id)
 
 
-@app.post("/admin/v1/availabilities", response_model=AvailabilityRuleResponse, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/admin/v1/availabilities",
+    response_model=AvailabilityRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Admin"],
+)
 async def create_availability_rule(payload: AvailabilityRulePayload):
     try:
         store.get_location(payload.location_id)
@@ -256,7 +294,11 @@ async def create_availability_rule(payload: AvailabilityRulePayload):
     return AvailabilityRuleResponse(rule_id=rule_id)
 
 
-@app.post("/admin/v1/slots/generate", response_model=SlotGenerationResponse)
+@app.post(
+    "/admin/v1/slots/generate",
+    response_model=SlotGenerationResponse,
+    tags=["Admin"],
+)
 async def generate_slots(payload: SlotGenerationRequest):
     if payload.location_id not in store.locations:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="location not found")
@@ -269,7 +311,7 @@ async def generate_slots(payload: SlotGenerationRequest):
     return SlotGenerationResponse(created=created, skipped=skipped)
 
 
-@app.get("/admin/v1/bookings", response_model=BookingListResponse)
+@app.get("/admin/v1/bookings", response_model=BookingListResponse, tags=["Admin"])
 async def list_bookings(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -336,7 +378,11 @@ async def list_bookings(
     return BookingListResponse(page=page, page_size=page_size, total=total, items=items)
 
 
-@app.patch("/admin/v1/bookings/{booking_id}", response_model=BookingPatchResponse)
+@app.patch(
+    "/admin/v1/bookings/{booking_id}",
+    response_model=BookingPatchResponse,
+    tags=["Admin"],
+)
 async def update_booking(booking_id: str, payload: BookingPatchRequest):
     store.expire_holds()
     try:
@@ -389,6 +435,32 @@ async def update_booking(booking_id: str, payload: BookingPatchRequest):
     booking.slot_id = new_slot.id
     store.upsert_booking(booking)
     return BookingPatchResponse(booking_id=booking.id, status=booking.status, slot_id=booking.slot_id)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=tags_metadata,
+    )
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[assignment]
+
+
+@app.get("/openapi.yaml", include_in_schema=False)
+async def openapi_yaml() -> Response:
+    schema = custom_openapi()
+    return Response(
+        content=yaml.safe_dump(schema, sort_keys=False),
+        media_type="application/yaml",
+    )
 
 
 def _remaining_capacity(slot: SlotInstance) -> int:

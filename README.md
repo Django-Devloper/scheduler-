@@ -34,6 +34,12 @@ uvicorn app.main:app --reload
 When the server starts it bootstraps sample data (a location, service, stylist, and availability rule). Use the admin slot
 generation endpoint to materialise slots before calling the public APIs.
 
+### Explore the API documentation
+
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+- Raw OpenAPI document: http://localhost:8000/openapi.yaml
+
 ## Next Steps
 - Replace the in-memory store with persistent services (PostgreSQL, Redis, message bus) per the architecture doc.
 - Add automated tests covering slot fairness, concurrency, expiry, and RBAC protections.
