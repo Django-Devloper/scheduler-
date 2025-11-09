@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -22,12 +21,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID
 
-
+# All scheduler tables live in this schema
 SCHEDULER_SCHEMA = os.getenv("SCHEDULER_DB_SCHEMA", "scheduler")
-
 metadata = MetaData(schema=SCHEDULER_SCHEMA)
 
-
+# -------------------------
+# locations
+# -------------------------
 locations = Table(
     "locations",
     metadata,
@@ -35,21 +35,18 @@ locations = Table(
     Column(
         "biz_entity_id",
         UUID(as_uuid=True),
-        ForeignKey(
-            "public.biz_entity.id",
-            name="fk_locations_biz_entity",
-            link_to_name=True,
-        ),
+        ForeignKey("public.biz_entity.id", name="fk_locations_biz_entity"),
         nullable=True,
     ),
-    Column("biz_entity_id", UUID(as_uuid=True), ForeignKey("public.biz_entity.id"), nullable=True),
     Column("name", String(255), nullable=False),
     Column("timezone", String(64), nullable=False, server_default="Asia/Dubai"),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
 )
 
-
+# -------------------------
+# services
+# -------------------------
 services = Table(
     "services",
     metadata,
@@ -57,7 +54,7 @@ services = Table(
     Column(
         "location_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE", name="fk_services_location"),
         nullable=False,
     ),
     Column("name", String(255), nullable=False),
@@ -69,7 +66,9 @@ services = Table(
     CheckConstraint("duration_minutes > 0", name="services_duration_positive"),
 )
 
-
+# -------------------------
+# stylists
+# -------------------------
 stylists = Table(
     "stylists",
     metadata,
@@ -77,7 +76,7 @@ stylists = Table(
     Column(
         "location_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE", name="fk_stylists_location"),
         nullable=False,
     ),
     Column("name", String(255), nullable=False),
@@ -87,7 +86,9 @@ stylists = Table(
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False),
 )
 
-
+# -------------------------
+# availability_rules
+# -------------------------
 availability_rules = Table(
     "availability_rules",
     metadata,
@@ -95,19 +96,19 @@ availability_rules = Table(
     Column(
         "location_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE", name="fk_availability_rules_location"),
         nullable=False,
     ),
     Column(
         "stylist_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.stylists.id", ondelete="SET NULL"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.stylists.id", ondelete="SET NULL", name="fk_availability_rules_stylist"),
         nullable=True,
     ),
     Column(
         "service_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.services.id", ondelete="SET NULL"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.services.id", ondelete="SET NULL", name="fk_availability_rules_service"),
         nullable=True,
     ),
     Column("rule_kind", String(32), nullable=False),
@@ -125,7 +126,9 @@ availability_rules = Table(
     CheckConstraint("slot_granularity_minutes > 0", name="availability_granularity_positive"),
 )
 
-
+# -------------------------
+# slot_instances
+# -------------------------
 slot_instances = Table(
     "slot_instances",
     metadata,
@@ -133,19 +136,19 @@ slot_instances = Table(
     Column(
         "location_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.locations.id", ondelete="CASCADE", name="fk_slots_location"),
         nullable=False,
     ),
     Column(
         "service_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.services.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.services.id", ondelete="CASCADE", name="fk_slots_service"),
         nullable=False,
     ),
     Column(
         "stylist_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.stylists.id", ondelete="SET NULL"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.stylists.id", ondelete="SET NULL", name="fk_slots_stylist"),
         nullable=True,
     ),
     Column("date", Date, nullable=False),
@@ -167,7 +170,9 @@ slot_instances = Table(
     ),
 )
 
-
+# -------------------------
+# bookings
+# -------------------------
 bookings = Table(
     "bookings",
     metadata,
@@ -175,20 +180,15 @@ bookings = Table(
     Column(
         "slot_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.slot_instances.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.slot_instances.id", ondelete="CASCADE", name="fk_bookings_slot"),
         nullable=False,
     ),
     Column(
         "user_id",
         UUID(as_uuid=True),
-        ForeignKey(
-            "public.auth_user.id",
-            name="fk_bookings_auth_user",
-            link_to_name=True,
-        ),
+        ForeignKey("public.auth_user.id", name="fk_bookings_auth_user"),
         nullable=True,
     ),
-    Column("user_id", UUID(as_uuid=True), ForeignKey("public.auth_user.id"), nullable=True),
     Column("customer_name", String(255), nullable=False),
     Column("customer_phone", String(50), nullable=False),
     Column("customer_email", String(255), nullable=True),
@@ -203,7 +203,9 @@ bookings = Table(
     Column("source", String(64), nullable=True),
 )
 
-
+# -------------------------
+# idempotency_keys
+# -------------------------
 idempotency_keys = Table(
     "idempotency_keys",
     metadata,
@@ -211,8 +213,20 @@ idempotency_keys = Table(
     Column(
         "booking_id",
         UUID(as_uuid=True),
-        ForeignKey(f"{SCHEDULER_SCHEMA}.bookings.id", ondelete="CASCADE"),
+        ForeignKey(f"{SCHEDULER_SCHEMA}.bookings.id", ondelete="CASCADE", name="fk_idem_booking"),
         nullable=False,
     ),
     Column("created_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
+
+__all__ = [
+    "metadata",
+    "locations",
+    "services",
+    "stylists",
+    "availability_rules",
+    "slot_instances",
+    "bookings",
+    "idempotency_keys",
+    "SCHEDULER_SCHEMA",
+]
