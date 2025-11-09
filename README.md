@@ -90,6 +90,21 @@ After creating a location you can POST availability rules and generate slots via
 - ReDoc: http://localhost:8000/redoc
 - Raw OpenAPI document: http://localhost:8000/openapi.yaml
 
+### Launch the browser-based API console
+
+The repository includes a zero-build HTML console under `frontend/` that lets you exercise
+both the public and admin endpoints without writing scripts. Serve the directory with any
+static file host (for example Python's built-in web server) and open it in your browser:
+
+```bash
+cd frontend
+python -m http.server 9000
+```
+
+Navigate to http://localhost:9000, set the API base URL (e.g. `http://localhost:8000`), and
+start calling endpoints. Form inputs map directly to the FastAPI request schema, and responses
+are rendered as formatted JSON for easy inspection.
+
 ## Next Steps
 - Add Redis-backed idempotency caches, hold TTL tracking, and exposure stickiness per the architecture doc.
 - Add automated tests covering slot fairness, concurrency, expiry, and RBAC protections.
