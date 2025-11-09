@@ -7,7 +7,7 @@ The General Scheduler is a production-grade booking platform that can be embedde
 - **API Gateway / Edge** – Authenticates traffic, applies rate limits, and routes to public (User) and private (Admin) backends.
 - **Auth Service** – Issues and validates JWTs. Supports RBAC roles: `admin`, `manager`, `scheduler`, `frontdesk`, `user`.
 - **Availability Service** – Manages working hours, exceptions, templates, and materializes slot instances.
-- **Slot Service** – Reads slot instances, calculates capacity, and applies the deterministic exposure algorithm (2–5 slots) per user request.
+- **Slot Service** – Reads slot instances, calculates capacity, and applies the deterministic exposure algorithm (1–3 person scoped or 3–5 location scoped slots) per user request.
 - **Booking Service** – Runs the hold → confirm workflow with idempotent mutations, transactional concurrency control, and post-booking events.
 - **Notification Service** *(optional)* – Emits SMS/Email/WhatsApp reminders from booking lifecycle events.
 - **Audit / Analytics** *(optional)* – Streams events for BI dashboards and compliance.
@@ -92,12 +92,13 @@ CREATE TABLE bookings (
 - All resources use UUIDv7 identifiers.
 - Mutating endpoints require an `Idempotency-Key` header. Responses are cached for 24 hours keyed by `(key, actor, payload hash)` to guard against duplicate holds or confirmations.
 
-## Slot Exposure (2–5 Randomized Slots)
-1. Compute the deterministic seed: `hash(user_or_session_id + date + (person_id or 'all'))`. Rotate the salt hourly to prevent starvation.
+## Slot Exposure (Person 1–3, Location 3–5 Randomized Slots)
+1. Compute the deterministic seed: `hash(user_or_session_id + date + (person_id or 'all') + context_window)`. Rotate the salt hourly to prevent starvation.
 2. Shuffle eligible slots (`status IN ('open','partial')` and `capacity > booked + hold`).
-3. Determine `k`:
-   - `<=5` available → expose all.
-   - Else start at 3, bump to 4 or 5 with a combined 30% probability (controlled by seeded RNG).
+3. Determine `k` based on context:
+   - Person scoped queries expose between 1 and 3 slots (inclusive), capped by availability.
+   - Location scoped queries expose between 3 and 5 slots (inclusive), capped by availability.
+   - Counts are chosen deterministically via a seeded RNG so the same user/session sees consistent sizes within the cache TTL.
 4. Enforce day-part fairness across `{morning, afternoon, evening}` buckets when slots exist.
 5. Cache exposed slot IDs in Redis for 7 minutes (`expose:{user}:{date}:{person}`) to ensure consistent UX.
 6. Return payload: exposed slots, total availability count, `has_more` flag.
@@ -110,21 +111,15 @@ Guardrails:
 ### Pseudocode
 ```python
 slots = db.find_available_slots(...)
-if len(slots) <= 5:
-    return expose(slots, total=len(slots), has_more=False)
-
-seed = hash(user_or_session_id + date + (person_id or 'all'))
+seed = hash(user_or_session_id + date + (person_id or 'all') + context_window)
 shuffled = deterministic_shuffle(slots, seed)
 
 AM = [s for s in shuffled if 6 <= s.local_start.hour < 12]
 PM = [s for s in shuffled if 12 <= s.local_start.hour < 17]
 EV = [s for s in shuffled if 17 <= s.local_start.hour < 22]
 
-k = 3
-if rand_from_seed(seed) < 0.15:
-    k = 4
-elif rand_from_seed(seed) < 0.30:
-    k = 5
+window = range(1, min(len(slots), 3) + 1) if person_id else range(3, min(len(slots), 5) + 1)
+k = rng_choice_from_seed(seed, window)
 
 pick = []
 for bucket in (AM, PM, EV):
@@ -135,7 +130,7 @@ rest = [s for s in shuffled if s not in pick]
 pick += rest[: max(0, k - len(pick))]
 
 cache.set(key, pick_ids, ttl=420)
-return expose(pick, total=len(slots), has_more=True)
+return expose(pick, total=len(slots), has_more=len(slots) > len(pick))
 ```
 
 ## Booking Flow (Hold → Confirm)
@@ -152,11 +147,13 @@ Two API surfaces exist behind the gateway.
 
 ### User API (`/v1`)
 - `GET /dates` – Future dates with availability counts.
-- `GET /slots` – Exposed slots (2–5) plus totals and `has_more`.
+- `GET /slots` – Exposed slots (1–3 person scoped or 3–5 location scoped) plus totals and `has_more`.
 - `POST /bookings` – Places a hold; requires `Idempotency-Key`.
 - `POST /bookings/{id}/confirm` – Confirms a held booking.
 
 ### Admin API (`/admin/v1`)
+- `POST /locations` / `GET /locations` – Manage scheduler locations and their timezones.
+- `POST /people` / `GET /people` – Manage schedulable people tied to locations.
 - `POST /availabilities` – Define weekly/date range/exception rules.
 - `POST /slots/generate` – Materialize slot instances for a date range.
 - `GET /bookings` – Filterable list of bookings.

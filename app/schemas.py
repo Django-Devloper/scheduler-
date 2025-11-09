@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import List, Optional
 
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from pydantic import BaseModel, Field, constr, root_validator, validator
 
 from .days import normalize_day_list
@@ -79,6 +81,69 @@ class BookingConfirmResponse(BaseModel):
     booking_id: str
     status: str
     slot_id: str
+
+
+class LocationCreateRequest(BaseModel):
+    name: constr(strip_whitespace=True, min_length=1)
+    timezone: constr(strip_whitespace=True)
+    biz_entity_id: Optional[str]
+
+    @validator("timezone")
+    def validate_timezone(cls, value: str):
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA identifier") from exc
+        return value
+
+
+class LocationResponse(BaseModel):
+    location_id: str
+    name: str
+    timezone: str
+    biz_entity_id: Optional[str]
+
+
+class LocationListResponse(BaseModel):
+    total: int
+    locations: List[LocationResponse]
+
+
+class PersonCreateRequest(BaseModel):
+    location_id: str
+    name: constr(strip_whitespace=True, min_length=1)
+    skills: Optional[List[str]]
+    active: bool = True
+
+    @validator("skills", each_item=True)
+    def validate_skill(cls, value: str):
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("skills cannot contain empty values")
+        return cleaned
+
+    @validator("skills")
+    def dedupe_skills(cls, value: Optional[List[str]]):
+        if value is None:
+            return value
+        deduped: List[str] = []
+        for item in value:
+            if item not in deduped:
+                deduped.append(item)
+        return deduped
+
+
+class PersonResponse(BaseModel):
+    person_id: str
+    location_id: str
+    name: str
+    skills: Optional[List[str]]
+    active: bool
+
+
+class PersonListResponse(BaseModel):
+    total: int
+    people: List[PersonResponse]
 
 
 class AvailabilityRulePayload(BaseModel):

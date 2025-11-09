@@ -24,6 +24,12 @@ from .schemas import (
     BookingResponse,
     DateAvailabilityResponse,
     DateAvailabilityResponseItem,
+    LocationCreateRequest,
+    LocationListResponse,
+    LocationResponse,
+    PersonCreateRequest,
+    PersonListResponse,
+    PersonResponse,
     SlotExposureItem,
     SlotExposureQuery,
     SlotExposureResponse,
@@ -150,12 +156,18 @@ async def get_slots(
 
     timezone = query.timezone or location.timezone
     user_key = _get_user_key(request)
+    if query.person_id:
+        min_slots, max_slots = 1, 3
+    else:
+        min_slots, max_slots = 3, 5
     exposed = exposure.select_exposed_slots(
         available_slots,
         location_timezone=timezone,
         user_key=user_key,
         date_key=str(query.date),
         person_key=query.person_id or "",
+        min_slots=min_slots,
+        max_slots=max_slots,
     )
     slot_items = [
         SlotExposureItem(
@@ -241,6 +253,90 @@ async def confirm_booking(booking_id: str):
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return BookingConfirmResponse(booking_id=booking.id, status=booking.status, slot_id=booking.slot_id)
+
+
+@app.post(
+    "/admin/v1/locations",
+    response_model=LocationResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Admin"],
+)
+async def create_location(payload: LocationCreateRequest):
+    location = await store.create_location(
+        name=payload.name,
+        timezone=payload.timezone,
+        biz_entity_id=payload.biz_entity_id,
+    )
+    return LocationResponse(
+        location_id=location.id,
+        name=location.name,
+        timezone=location.timezone,
+        biz_entity_id=location.biz_entity_id,
+    )
+
+
+@app.get("/admin/v1/locations", response_model=LocationListResponse, tags=["Admin"])
+async def list_locations():
+    locations = await store.list_locations()
+    return LocationListResponse(
+        total=len(locations),
+        locations=[
+            LocationResponse(
+                location_id=location.id,
+                name=location.name,
+                timezone=location.timezone,
+                biz_entity_id=location.biz_entity_id,
+            )
+            for location in locations
+        ],
+    )
+
+
+@app.post(
+    "/admin/v1/people",
+    response_model=PersonResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Admin"],
+)
+async def create_person(payload: PersonCreateRequest):
+    try:
+        await store.get_location(payload.location_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    person = await store.create_person(
+        location_id=payload.location_id,
+        name=payload.name,
+        skills=payload.skills,
+        active=payload.active,
+    )
+    return PersonResponse(
+        person_id=person.id,
+        location_id=person.location_id,
+        name=person.name,
+        skills=list(person.skills) if person.skills is not None else None,
+        active=person.active,
+    )
+
+
+@app.get("/admin/v1/people", response_model=PersonListResponse, tags=["Admin"])
+async def list_people(
+    location_id: Optional[str] = Query(default=None),
+    active: Optional[bool] = Query(default=None),
+):
+    people_records = await store.list_people(location_id=location_id, active=active)
+    return PersonListResponse(
+        total=len(people_records),
+        people=[
+            PersonResponse(
+                person_id=person.id,
+                location_id=person.location_id,
+                name=person.name,
+                skills=list(person.skills) if person.skills is not None else None,
+                active=person.active,
+            )
+            for person in people_records
+        ],
+    )
 
 
 @app.post(

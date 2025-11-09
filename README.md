@@ -7,9 +7,9 @@ A production-grade scheduling platform that can be embedded into any application
 - [OpenAPI Specification](api/openapi.yaml)
 
 ## Key Features
-- Deterministic slot exposure that surfaces 2–5 randomized times per request while preserving inventory.
+- Deterministic slot exposure that surfaces 1–3 slots when a specific person is requested and 3–5 when browsing by location, while preserving inventory fairness.
 - Hold → confirm booking workflow with idempotent writes, transactional concurrency control, and sticky exposure caching.
-- Admin tooling for defining availability rules, generating slot instances, and managing bookings for any set of people/resources.
+- Admin tooling for defining locations, people, availability rules, generating slot instances, and managing bookings for any set of resources.
 
 ## Getting Started
 

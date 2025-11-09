@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from zoneinfo import ZoneInfo
 
@@ -213,6 +213,135 @@ class DatabaseStore:
                 skills=row["skills"],
                 active=bool(row["active"]),
             )
+
+    async def list_locations(self) -> list[Location]:
+        async with get_session() as session:
+            result = await session.execute(
+                select(
+                    locations.c.id,
+                    locations.c.name,
+                    locations.c.timezone,
+                    locations.c.biz_entity_id,
+                ).order_by(locations.c.name)
+            )
+            rows = result.mappings().all()
+        return [
+            Location(
+                id=str(row["id"]),
+                name=row["name"],
+                timezone=row["timezone"],
+                biz_entity_id=str(row["biz_entity_id"]) if row["biz_entity_id"] else None,
+            )
+            for row in rows
+        ]
+
+    async def create_location(
+        self,
+        *,
+        name: str,
+        timezone: str,
+        biz_entity_id: Optional[str],
+    ) -> Location:
+        location_id = str(uuid.uuid4())
+        async with get_session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    pg_insert(locations)
+                    .values(
+                        id=location_id,
+                        name=name,
+                        timezone=timezone,
+                        biz_entity_id=biz_entity_id,
+                    )
+                    .returning(
+                        locations.c.id,
+                        locations.c.name,
+                        locations.c.timezone,
+                        locations.c.biz_entity_id,
+                    )
+                )
+                row = result.mappings().first()
+                if not row:
+                    raise RuntimeError("failed to insert location")
+        return Location(
+            id=str(row["id"]),
+            name=row["name"],
+            timezone=row["timezone"],
+            biz_entity_id=str(row["biz_entity_id"]) if row["biz_entity_id"] else None,
+        )
+
+    async def list_people(
+        self,
+        *,
+        location_id: Optional[str] = None,
+        active: Optional[bool] = None,
+    ) -> list[Person]:
+        conditions = []
+        if location_id:
+            conditions.append(people.c.location_id == location_id)
+        if active is not None:
+            conditions.append(people.c.active == active)
+        stmt: Select = select(people)
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+        stmt = stmt.order_by(people.c.name)
+        async with get_session() as session:
+            result = await session.execute(stmt)
+            rows = result.mappings().all()
+        return [
+            Person(
+                id=str(row["id"]),
+                location_id=str(row["location_id"]),
+                name=row["name"],
+                skills=row["skills"],
+                active=bool(row["active"]),
+            )
+            for row in rows
+        ]
+
+    async def create_person(
+        self,
+        *,
+        location_id: str,
+        name: str,
+        skills: Optional[Sequence[str]],
+        active: bool,
+    ) -> Person:
+        person_id = str(uuid.uuid4())
+        skills_payload: Optional[List[str]]
+        if skills is None:
+            skills_payload = None
+        else:
+            skills_payload = list(skills)
+        async with get_session() as session:
+            async with session.begin():
+                result = await session.execute(
+                    pg_insert(people)
+                    .values(
+                        id=person_id,
+                        location_id=location_id,
+                        name=name,
+                        skills=skills_payload,
+                        active=active,
+                    )
+                    .returning(
+                        people.c.id,
+                        people.c.location_id,
+                        people.c.name,
+                        people.c.skills,
+                        people.c.active,
+                    )
+                )
+                row = result.mappings().first()
+                if not row:
+                    raise RuntimeError("failed to insert person")
+        return Person(
+            id=str(row["id"]),
+            location_id=str(row["location_id"]),
+            name=row["name"],
+            skills=row["skills"],
+            active=bool(row["active"]),
+        )
 
     async def list_slots(
         self,
