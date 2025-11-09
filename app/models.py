@@ -32,6 +32,16 @@ locations = Table(
     "locations",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
+    Column(
+        "biz_entity_id",
+        UUID(as_uuid=True),
+        ForeignKey(
+            "public.biz_entity.id",
+            name="fk_locations_biz_entity",
+            link_to_name=True,
+        ),
+        nullable=True,
+    ),
     Column("biz_entity_id", UUID(as_uuid=True), ForeignKey("public.biz_entity.id"), nullable=True),
     Column("name", String(255), nullable=False),
     Column("timezone", String(64), nullable=False, server_default="Asia/Dubai"),
@@ -167,6 +177,16 @@ bookings = Table(
         UUID(as_uuid=True),
         ForeignKey(f"{SCHEDULER_SCHEMA}.slot_instances.id", ondelete="CASCADE"),
         nullable=False,
+    ),
+    Column(
+        "user_id",
+        UUID(as_uuid=True),
+        ForeignKey(
+            "public.auth_user.id",
+            name="fk_bookings_auth_user",
+            link_to_name=True,
+        ),
+        nullable=True,
     ),
     Column("user_id", UUID(as_uuid=True), ForeignKey("public.auth_user.id"), nullable=True),
     Column("customer_name", String(255), nullable=False),
