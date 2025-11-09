@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, constr, root_validator, validator
 
+from .days import normalize_day_list
 
 class DateRangeQuery(BaseModel):
     from_date: date = Field(alias="from")
@@ -84,7 +85,7 @@ class AvailabilityRulePayload(BaseModel):
     location_id: str
     person_id: Optional[str]
     rule_kind: constr(strip_whitespace=True)
-    days_of_week: Optional[List[int]]
+    days_of_week: Optional[List[str]]
     start_time: time
     end_time: time
     slot_capacity: int = 1
@@ -110,6 +111,12 @@ class AvailabilityRulePayload(BaseModel):
         if duration is None or duration <= 0:
             raise ValueError("slot_duration_minutes must be > 0")
         return values
+
+    @validator("days_of_week")
+    def validate_days_of_week(cls, value: Optional[List[str]]):
+        if value is None:
+            return value
+        return normalize_day_list(value)
 
 
 class AvailabilityRuleResponse(BaseModel):

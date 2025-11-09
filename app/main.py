@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from zoneinfo import ZoneInfo
 
 from . import exposure
+from .days import day_names_to_iso
 from .schemas import (
     AvailabilityRulePayload,
     AvailabilityRuleResponse,
@@ -452,13 +453,20 @@ async def _generate_slots_for_range(
     utc = ZoneInfo("UTC")
     created = 0
     skipped = 0
+    iso_cache: dict[str, set[int]] = {}
     for single_date in _daterange(start_date, end_date):
         for rule in rules:
+            if rule.days_of_week:
+                cache_key = "-".join(rule.days_of_week)
+                iso_days = iso_cache.get(cache_key)
+                if iso_days is None:
+                    iso_days = day_names_to_iso(rule.days_of_week)
+                    iso_cache[cache_key] = iso_days
+                if iso_days and single_date.isoweekday() not in iso_days:
+                    continue
             if rule.valid_from and single_date < rule.valid_from:
                 continue
             if rule.valid_to and single_date > rule.valid_to:
-                continue
-            if rule.days_of_week and single_date.isoweekday() not in rule.days_of_week:
                 continue
             if rule.is_closed:
                 continue

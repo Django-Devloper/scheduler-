@@ -11,6 +11,7 @@ from sqlalchemy import Select, and_, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .db import get_session, initialize_schema
+from .days import decode_day_list, normalize_day_list
 from .models import (
     availability_rules,
     bookings,
@@ -59,7 +60,7 @@ class AvailabilityRule:
     location_id: str
     person_id: Optional[str]
     rule_kind: str
-    days_of_week: Optional[Sequence[int]]
+    days_of_week: Optional[Sequence[str]]
     start_time: time
     end_time: time
     slot_capacity: int
@@ -245,6 +246,9 @@ class DatabaseStore:
         return [_map_slot(row) for row in rows]
 
     async def add_availability_rule(self, rule: AvailabilityRule) -> str:
+        normalized_days = (
+            list(normalize_day_list(rule.days_of_week)) if rule.days_of_week else None
+        )
         async with get_session() as session:
             async with session.begin():
                 await session.execute(
@@ -254,7 +258,7 @@ class DatabaseStore:
                         location_id=rule.location_id,
                         person_id=rule.person_id,
                         rule_kind=rule.rule_kind,
-                        days_of_week=list(rule.days_of_week) if rule.days_of_week else None,
+                        days_of_week=normalized_days,
                         start_time=rule.start_time,
                         end_time=rule.end_time,
                         slot_capacity=rule.slot_capacity,
@@ -269,7 +273,7 @@ class DatabaseStore:
                         set_={
                             "person_id": rule.person_id,
                             "rule_kind": rule.rule_kind,
-                            "days_of_week": list(rule.days_of_week) if rule.days_of_week else None,
+                            "days_of_week": normalized_days,
                             "start_time": rule.start_time,
                             "end_time": rule.end_time,
                             "slot_capacity": rule.slot_capacity,
@@ -754,7 +758,8 @@ def _map_booking(row: dict) -> Booking:
 def _map_rule(row: dict) -> AvailabilityRule:
     days = row.get("days_of_week")
     if isinstance(days, list):
-        days_seq: Optional[Sequence[int]] = [int(d) for d in days]
+        normalized_days = decode_day_list(days)
+        days_seq: Optional[Sequence[str]] = normalized_days or None
     else:
         days_seq = None
     return AvailabilityRule(
