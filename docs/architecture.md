@@ -1,11 +1,11 @@
-# Hair Stylist Scheduler Architecture
+# General Scheduler Architecture
 
 ## Overview
-The Hair Stylist Scheduler is designed as a production-grade, microservices-based booking platform for a multi-location salon brand. It exposes separate User and Admin APIs while enforcing strong consistency, deterministic slot exposure, and robust booking orchestration.
+The General Scheduler is a production-grade booking platform that can be embedded into any product domain. It exposes separate User and Admin APIs while enforcing strong consistency, deterministic slot exposure, and robust booking orchestration.
 
 ## Service Topology
 - **API Gateway / Edge** – Authenticates traffic, applies rate limits, and routes to public (User) and private (Admin) backends.
-- **Auth Service** – Issues and validates JWTs. Supports RBAC roles: `admin`, `manager`, `stylist`, `frontdesk`, `user`.
+- **Auth Service** – Issues and validates JWTs. Supports RBAC roles: `admin`, `manager`, `scheduler`, `frontdesk`, `user`.
 - **Availability Service** – Manages working hours, exceptions, templates, and materializes slot instances.
 - **Slot Service** – Reads slot instances, calculates capacity, and applies the deterministic exposure algorithm (2–5 slots) per user request.
 - **Booking Service** – Runs the hold → confirm workflow with idempotent mutations, transactional concurrency control, and post-booking events.
@@ -15,7 +15,7 @@ The Hair Stylist Scheduler is designed as a production-grade, microservices-base
 Each service is containerized with `/healthz` and `/readyz` probes, instrumented with metrics (`exposed_slots_count`, `hold_to_confirm_ms`, etc.), and participates in distributed tracing via the `X-Request-Id` header.
 
 ## Data Stores
-- **PostgreSQL** – Authoritative store for locations, services, stylists, availability rules, slot instances, and bookings. All timestamps persist in UTC.
+- **PostgreSQL** – Authoritative store for locations, people, availability rules, slot instances, and bookings. All timestamps persist in UTC.
 - **Redis** – Holds temporary booking holds (TTL 10 minutes), rate limit state, and sticky slot exposure caches (7 minutes).
 - **Message Bus (Kafka/SNS/SQS)** – Optional backbone for async notifications (`booking.created`, `booking.confirmed`, `booking.cancelled`).
 
@@ -27,16 +27,7 @@ CREATE TABLE locations (
   timezone TEXT NOT NULL DEFAULT 'Asia/Dubai'
 );
 
-CREATE TABLE services (
-  id UUID PRIMARY KEY,
-  location_id UUID REFERENCES locations(id),
-  name TEXT NOT NULL,
-  duration_minutes INT NOT NULL CHECK (duration_minutes > 0),
-  requires_stylist BOOLEAN NOT NULL DEFAULT TRUE,
-  active BOOLEAN NOT NULL DEFAULT TRUE
-);
-
-CREATE TABLE stylists (
+CREATE TABLE people (
   id UUID PRIMARY KEY,
   location_id UUID REFERENCES locations(id),
   name TEXT NOT NULL,
@@ -47,25 +38,24 @@ CREATE TABLE stylists (
 CREATE TABLE availability_rules (
   id UUID PRIMARY KEY,
   location_id UUID REFERENCES locations(id),
-  stylist_id UUID NULL REFERENCES stylists(id),
-  service_id UUID NULL REFERENCES services(id),
+  person_id UUID NULL REFERENCES people(id),
   rule_kind TEXT NOT NULL CHECK (rule_kind IN ('WEEKLY','DATE_RANGE','EXCEPTION')),
   days_of_week SMALLINT[],
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
   slot_capacity SMALLINT NOT NULL DEFAULT 1,
   slot_granularity_minutes SMALLINT NOT NULL DEFAULT 15,
+  slot_duration_minutes SMALLINT NOT NULL DEFAULT 30,
   valid_from DATE,
   valid_to DATE,
   is_closed BOOLEAN NOT NULL DEFAULT FALSE,
-  UNIQUE(location_id, stylist_id, service_id, rule_kind, days_of_week, start_time, end_time, valid_from, valid_to)
+  UNIQUE(location_id, person_id, rule_kind, days_of_week, start_time, end_time, valid_from, valid_to)
 );
 
 CREATE TABLE slot_instances (
   id UUID PRIMARY KEY,
   location_id UUID REFERENCES locations(id),
-  service_id UUID REFERENCES services(id),
-  stylist_id UUID NULL REFERENCES stylists(id),
+  person_id UUID NULL REFERENCES people(id),
   date DATE NOT NULL,
   start_at TIMESTAMPTZ NOT NULL,
   end_at TIMESTAMPTZ NOT NULL,
@@ -73,7 +63,7 @@ CREATE TABLE slot_instances (
   booked SMALLINT NOT NULL DEFAULT 0,
   hold SMALLINT NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('open','partial','full','blocked')),
-  UNIQUE(location_id, service_id, stylist_id, start_at)
+  UNIQUE(location_id, person_id, start_at)
 );
 
 CREATE TABLE bookings (
@@ -103,13 +93,13 @@ CREATE TABLE bookings (
 - Mutating endpoints require an `Idempotency-Key` header. Responses are cached for 24 hours keyed by `(key, actor, payload hash)` to guard against duplicate holds or confirmations.
 
 ## Slot Exposure (2–5 Randomized Slots)
-1. Compute the deterministic seed: `hash(user_or_session_id + date + service_id + stylist_id)`. Rotate the salt hourly to prevent starvation.
+1. Compute the deterministic seed: `hash(user_or_session_id + date + (person_id or 'all'))`. Rotate the salt hourly to prevent starvation.
 2. Shuffle eligible slots (`status IN ('open','partial')` and `capacity > booked + hold`).
 3. Determine `k`:
    - `<=5` available → expose all.
    - Else start at 3, bump to 4 or 5 with a combined 30% probability (controlled by seeded RNG).
 4. Enforce day-part fairness across `{morning, afternoon, evening}` buckets when slots exist.
-5. Cache exposed slot IDs in Redis for 7 minutes (`expose:{user}:{date}:{service}:{stylist}`) to ensure consistent UX.
+5. Cache exposed slot IDs in Redis for 7 minutes (`expose:{user}:{date}:{person}`) to ensure consistent UX.
 6. Return payload: exposed slots, total availability count, `has_more` flag.
 
 Guardrails:
@@ -123,7 +113,7 @@ slots = db.find_available_slots(...)
 if len(slots) <= 5:
     return expose(slots, total=len(slots), has_more=False)
 
-seed = hash(user_or_session_id + date + service_id + (stylist_id or 'all'))
+seed = hash(user_or_session_id + date + (person_id or 'all'))
 shuffled = deterministic_shuffle(slots, seed)
 
 AM = [s for s in shuffled if 6 <= s.local_start.hour < 12]
@@ -189,4 +179,4 @@ Admin endpoints require JWT roles `admin`, `manager`, or `frontdesk`.
 - Security: role-based gating, PII redaction.
 
 ## Future Enhancements
-Membership programs, deposits/no-show penalties, waitlists with auto-fill, 2-way calendar sync, richer notification channels, travel time buffers for stylists, and integrated payments are planned for later phases.
+Membership programs, deposits/no-show penalties, waitlists with auto-fill, 2-way calendar sync, richer notification channels, travel time buffers for team members, and integrated payments are planned for later phases.
