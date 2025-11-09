@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Hair Stylist Scheduler API
+  title: General Scheduler API
   version: 1.0.0
 servers:
   - url: https://api.brand.com
@@ -25,11 +25,7 @@ paths:
           schema:
             type: string
         - in: query
-          name: service_id
-          schema:
-            type: string
-        - in: query
-          name: stylist_id
+          name: person_id
           schema:
             type: string
         - in: query
@@ -55,12 +51,7 @@ paths:
           schema:
             type: string
         - in: query
-          name: service_id
-          required: true
-          schema:
-            type: string
-        - in: query
-          name: stylist_id
+          name: person_id
           schema:
             type: string
         - in: query

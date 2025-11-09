@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, constr, root_validator, validator
 
+from .days import normalize_day_list
 
 class DateRangeQuery(BaseModel):
     from_date: date = Field(alias="from")
@@ -34,8 +35,7 @@ class DateAvailabilityResponse(BaseModel):
 class SlotExposureQuery(BaseModel):
     date: date
     location_id: constr(strip_whitespace=True)
-    service_id: constr(strip_whitespace=True)
-    stylist_id: Optional[str] = None
+    person_id: Optional[str] = None
     timezone: Optional[str] = None
 
 
@@ -48,8 +48,7 @@ class SlotExposureItem(BaseModel):
 
 class SlotExposureResponse(BaseModel):
     date: date
-    service_id: str
-    stylist_id: Optional[str] = None
+    person_id: Optional[str] = None
     total_available: int
     has_more: bool
     exposed_slots: List[SlotExposureItem]
@@ -84,14 +83,14 @@ class BookingConfirmResponse(BaseModel):
 
 class AvailabilityRulePayload(BaseModel):
     location_id: str
-    stylist_id: Optional[str]
-    service_id: Optional[str]
+    person_id: Optional[str]
     rule_kind: constr(strip_whitespace=True)
-    days_of_week: Optional[List[int]]
+    days_of_week: Optional[List[str]]
     start_time: time
     end_time: time
     slot_capacity: int = 1
     slot_granularity_minutes: int = 15
+    slot_duration_minutes: int = 30
     valid_from: Optional[date]
     valid_to: Optional[date]
     is_closed: bool = False
@@ -108,7 +107,16 @@ class AvailabilityRulePayload(BaseModel):
         granularity = values.get("slot_granularity_minutes")
         if granularity <= 0:
             raise ValueError("slot_granularity_minutes must be > 0")
+        duration = values.get("slot_duration_minutes")
+        if duration is None or duration <= 0:
+            raise ValueError("slot_duration_minutes must be > 0")
         return values
+
+    @validator("days_of_week")
+    def validate_days_of_week(cls, value: Optional[List[str]]):
+        if value is None:
+            return value
+        return normalize_day_list(value)
 
 
 class AvailabilityRuleResponse(BaseModel):
@@ -140,8 +148,7 @@ class BookingListItem(BaseModel):
     date: date
     start_at: datetime
     customer: CustomerInfo
-    service_id: str
-    stylist_id: Optional[str]
+    person_id: Optional[str]
 
 
 class BookingListResponse(BaseModel):

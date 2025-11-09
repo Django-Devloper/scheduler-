@@ -1,6 +1,6 @@
-# Hair Stylist Scheduler
+# General Scheduler
 
-A production-grade scheduling platform for a multi-location hair stylist brand. The system is built around microservices that manage availability, slots, bookings, and notifications while exposing both public (User) and private (Admin) APIs.
+A production-grade scheduling platform that can be embedded into any application needing appointment style scheduling. The system manages locations, people, availability, slots, and bookings while exposing both public (User) and private (Admin) APIs.
 
 ## Documentation
 - [Architecture Overview](docs/architecture.md)
@@ -9,7 +9,7 @@ A production-grade scheduling platform for a multi-location hair stylist brand. 
 ## Key Features
 - Deterministic slot exposure that surfaces 2–5 randomized times per request while preserving inventory.
 - Hold → confirm booking workflow with idempotent writes, transactional concurrency control, and sticky exposure caching.
-- Admin tooling for defining availability rules, generating slot instances, and managing bookings.
+- Admin tooling for defining availability rules, generating slot instances, and managing bookings for any set of people/resources.
 
 ## Getting Started
 
@@ -61,7 +61,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --env-file .env
 ```
 
-On startup the API will create the `scheduler` schema (if needed) and run the DDL for `locations`, `services`, `stylists`,
+On startup the API will create the `scheduler` schema (if needed) and run the DDL for `locations`, `people`,
 `availability_rules`, `slot_instances`, `bookings`, and `idempotency_keys`. Use the admin endpoints to load availability rules
 and generate slot instances after seeding any required reference data.
 
@@ -78,32 +78,21 @@ INSERT INTO public.auth_user (id, email) VALUES ('00000000-0000-0000-0000-000000
 ON CONFLICT DO NOTHING;
 
 INSERT INTO scheduler.locations (id, biz_entity_id, name, timezone)
-VALUES ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000001', 'Downtown Studio', 'Asia/Dubai')
+VALUES ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000001', 'Downtown Workspace', 'Asia/Dubai')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO scheduler.people (id, location_id, name)
+VALUES ('00000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000010', 'Alex Example')
 ON CONFLICT DO NOTHING;
 ```
 
-After creating a location you can POST availability rules and generate slots via the admin API just as in production.
+After creating a location you can insert people into `scheduler.people`, define availability rules, and generate slots via the admin API.
 
 ### Explore the API documentation
 
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 - Raw OpenAPI document: http://localhost:8000/openapi.yaml
-
-### Launch the browser-based API console
-
-The repository includes a zero-build HTML console under `frontend/` that lets you exercise
-both the public and admin endpoints without writing scripts. Serve the directory with any
-static file host (for example Python's built-in web server) and open it in your browser:
-
-```bash
-cd frontend
-python -m http.server 9000
-```
-
-Navigate to http://localhost:9000, set the API base URL (e.g. `http://localhost:8000`), and
-start calling endpoints. Form inputs map directly to the FastAPI request schema, and responses
-are rendered as formatted JSON for easy inspection.
 
 ## Next Steps
 - Add Redis-backed idempotency caches, hold TTL tracking, and exposure stickiness per the architecture doc.
