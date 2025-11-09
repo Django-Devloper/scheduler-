@@ -37,7 +37,6 @@ from .store import (
     SlotInstance,
     Location,
     BookingWithSlot,
-    Service,
     store,
 )
 
@@ -48,18 +47,15 @@ tags_metadata = [
     },
     {
         "name": "Admin",
-        "description": "Administrative endpoints for managing availability and bookings.",
+        "description": "Administrative endpoints for managing availability rules, slots, and bookings.",
     },
 ]
 
 
 app = FastAPI(
-    title="Hair Stylist Scheduler API",
+    title="General Scheduler API",
     version="1.0.0",
-    description=(
-        "APIs for exposing appointment availability to end users while allowing admins to "
-        "manage rules, generate slots, and review bookings."
-    ),
+    description="APIs for exposing availability to end users while allowing admins to manage people, rules, slots, and bookings.",
     openapi_tags=tags_metadata,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -90,15 +86,13 @@ async def get_dates(
     from_date: date = Query(default=date.today(), alias="from"),
     days: int = Query(default=30, ge=1, le=90),
     location_id: Optional[str] = Query(default=None),
-    service_id: Optional[str] = Query(default=None),
-    stylist_id: Optional[str] = Query(default=None),
+    person_id: Optional[str] = Query(default=None),
 ):
     await store.expire_holds()
     to_date = from_date + timedelta(days=days)
     slots = await store.list_slots(
         location_id=location_id,
-        service_id=service_id,
-        stylist_id=stylist_id,
+        person_id=person_id,
         start_date=from_date,
         end_date=to_date,
     )
@@ -132,16 +126,14 @@ async def get_slots(
     await store.expire_holds()
     try:
         location = await store.get_location(query.location_id)
-        await store.get_service(query.service_id)
-        if query.stylist_id is not None:
-            await store.get_stylist(query.stylist_id)
+        if query.person_id is not None:
+            await store.get_person(query.person_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     slots = await store.list_slots(
         location_id=query.location_id,
-        service_id=query.service_id,
-        stylist_id=query.stylist_id,
+        person_id=query.person_id,
         for_date=query.date,
     )
     available_slots = [slot for slot in slots if _remaining_capacity(slot) > 0 and slot.status != "blocked"]
@@ -149,8 +141,7 @@ async def get_slots(
     if total_available == 0:
         return SlotExposureResponse(
             date=query.date,
-            service_id=query.service_id,
-            stylist_id=query.stylist_id,
+            person_id=query.person_id,
             total_available=0,
             has_more=False,
             exposed_slots=[],
@@ -163,8 +154,7 @@ async def get_slots(
         location_timezone=timezone,
         user_key=user_key,
         date_key=str(query.date),
-        service_key=query.service_id,
-        stylist_key=query.stylist_id or "",
+        person_key=query.person_id or "",
     )
     slot_items = [
         SlotExposureItem(
@@ -178,8 +168,7 @@ async def get_slots(
     has_more = total_available > len(slot_items)
     return SlotExposureResponse(
         date=query.date,
-        service_id=query.service_id,
-        stylist_id=query.stylist_id,
+        person_id=query.person_id,
         total_available=total_available,
         has_more=has_more,
         exposed_slots=slot_items,
@@ -262,24 +251,22 @@ async def confirm_booking(booking_id: str):
 async def create_availability_rule(payload: AvailabilityRulePayload):
     try:
         await store.get_location(payload.location_id)
-        if payload.service_id:
-            await store.get_service(payload.service_id)
-        if payload.stylist_id:
-            await store.get_stylist(payload.stylist_id)
+        if payload.person_id:
+            await store.get_person(payload.person_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     rule_id = str(uuid.uuid4())
     availability_rule = AvailabilityRule(
         id=rule_id,
         location_id=payload.location_id,
-        stylist_id=payload.stylist_id,
-        service_id=payload.service_id,
+        person_id=payload.person_id,
         rule_kind=payload.rule_kind,
         days_of_week=payload.days_of_week,
         start_time=payload.start_time,
         end_time=payload.end_time,
         slot_capacity=payload.slot_capacity,
         slot_granularity_minutes=payload.slot_granularity_minutes,
+        slot_duration_minutes=payload.slot_duration_minutes,
         valid_from=payload.valid_from,
         valid_to=payload.valid_to,
         is_closed=payload.is_closed,
@@ -313,8 +300,7 @@ async def list_bookings(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     status_filter: Optional[str] = Query(default=None, alias="status"),
-    service_id: Optional[str] = None,
-    stylist_id: Optional[str] = None,
+    person_id: Optional[str] = None,
     location_id: Optional[str] = None,
     date_from: Optional[date] = Query(default=None, alias="date_from"),
     date_to: Optional[date] = Query(default=None, alias="date_to"),
@@ -335,9 +321,7 @@ async def list_bookings(
         slot = record.slot
         if status_filter and booking.status != status_filter:
             continue
-        if service_id and slot.service_id != service_id:
-            continue
-        if stylist_id and slot.stylist_id != stylist_id:
+        if person_id and slot.person_id != person_id:
             continue
         if location_id and slot.location_id != location_id:
             continue
@@ -371,8 +355,7 @@ async def list_bookings(
                     "phone": booking.customer_phone,
                     "email": booking.customer_email,
                 },
-                service_id=slot.service_id,
-                stylist_id=slot.stylist_id,
+                person_id=slot.person_id,
             )
         )
 
@@ -463,9 +446,8 @@ async def _generate_slots_for_range(
         end_date=end_date,
     )
     existing_index = {
-        (slot.service_id, slot.stylist_id, slot.start_at): slot for slot in existing_slots
+        (slot.person_id, slot.start_at): slot for slot in existing_slots
     }
-    services_cache: dict[str, Service] = {}
     tz = ZoneInfo(location_timezone)
     utc = ZoneInfo("UTC")
     created = 0
@@ -480,20 +462,14 @@ async def _generate_slots_for_range(
                 continue
             if rule.is_closed:
                 continue
-            if not rule.service_id:
-                continue
-            service = services_cache.get(rule.service_id)
-            if service is None:
-                service = await store.get_service(rule.service_id)
-                services_cache[rule.service_id] = service
-            duration = service.duration_minutes
+            duration = rule.slot_duration_minutes
             start_dt_local = datetime.combine(single_date, rule.start_time, tzinfo=tz)
             end_dt_local = datetime.combine(single_date, rule.end_time, tzinfo=tz)
             cursor = start_dt_local
             while cursor + timedelta(minutes=duration) <= end_dt_local:
                 start_utc = cursor.astimezone(utc)
                 end_utc = (cursor + timedelta(minutes=duration)).astimezone(utc)
-                key = (rule.service_id, rule.stylist_id, start_utc)
+                key = (rule.person_id, start_utc)
                 if key in existing_index:
                     skipped += 1
                 else:
@@ -503,8 +479,7 @@ async def _generate_slots_for_range(
                         slot = SlotInstance(
                             id=str(uuid.uuid4()),
                             location_id=rule.location_id,
-                            service_id=rule.service_id,
-                            stylist_id=rule.stylist_id,
+                            person_id=rule.person_id,
                             date=single_date,
                             start_at=start_utc,
                             end_at=end_utc,

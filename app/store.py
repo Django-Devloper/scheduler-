@@ -16,9 +16,8 @@ from .models import (
     bookings,
     idempotency_keys,
     locations,
-    services,
+    people,
     slot_instances,
-    stylists,
 )
 
 
@@ -46,17 +45,7 @@ class Location:
 
 
 @dataclass
-class Service:
-    id: str
-    location_id: str
-    name: str
-    duration_minutes: int
-    requires_stylist: bool
-    active: bool
-
-
-@dataclass
-class Stylist:
+class Person:
     id: str
     location_id: str
     name: str
@@ -68,14 +57,14 @@ class Stylist:
 class AvailabilityRule:
     id: str
     location_id: str
-    stylist_id: Optional[str]
-    service_id: Optional[str]
+    person_id: Optional[str]
     rule_kind: str
     days_of_week: Optional[Sequence[int]]
     start_time: time
     end_time: time
     slot_capacity: int
     slot_granularity_minutes: int
+    slot_duration_minutes: int
     valid_from: Optional[date]
     valid_to: Optional[date]
     is_closed: bool
@@ -85,8 +74,7 @@ class AvailabilityRule:
 class SlotInstance:
     id: str
     location_id: str
-    service_id: str
-    stylist_id: Optional[str]
+    person_id: Optional[str]
     date: date
     start_at: datetime
     end_at: datetime
@@ -201,47 +189,23 @@ class DatabaseStore:
                 biz_entity_id=str(row["biz_entity_id"]) if row["biz_entity_id"] else None,
             )
 
-    async def get_service(self, service_id: str) -> Service:
-        async with get_session() as session:
-            result = await session.execute(
-                select(
-                    services.c.id,
-                    services.c.location_id,
-                    services.c.name,
-                    services.c.duration_minutes,
-                    services.c.requires_stylist,
-                    services.c.active,
-                ).where(services.c.id == service_id)
-            )
-            row = result.mappings().first()
-            if not row:
-                raise NotFoundError("service not found")
-            return Service(
-                id=str(row["id"]),
-                location_id=str(row["location_id"]),
-                name=row["name"],
-                duration_minutes=row["duration_minutes"],
-                requires_stylist=bool(row["requires_stylist"]),
-                active=bool(row["active"]),
-            )
-
-    async def get_stylist(self, stylist_id: Optional[str]) -> Optional[Stylist]:
-        if stylist_id is None:
+    async def get_person(self, person_id: Optional[str]) -> Optional[Person]:
+        if person_id is None:
             return None
         async with get_session() as session:
             result = await session.execute(
                 select(
-                    stylists.c.id,
-                    stylists.c.location_id,
-                    stylists.c.name,
-                    stylists.c.skills,
-                    stylists.c.active,
-                ).where(stylists.c.id == stylist_id)
+                    people.c.id,
+                    people.c.location_id,
+                    people.c.name,
+                    people.c.skills,
+                    people.c.active,
+                ).where(people.c.id == person_id)
             )
             row = result.mappings().first()
             if not row:
-                raise NotFoundError("stylist not found")
-            return Stylist(
+                raise NotFoundError("person not found")
+            return Person(
                 id=str(row["id"]),
                 location_id=str(row["location_id"]),
                 name=row["name"],
@@ -253,8 +217,7 @@ class DatabaseStore:
         self,
         *,
         location_id: Optional[str] = None,
-        service_id: Optional[str] = None,
-        stylist_id: Optional[str] = None,
+        person_id: Optional[str] = None,
         for_date: Optional[date] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
@@ -262,10 +225,8 @@ class DatabaseStore:
         conditions = []
         if location_id:
             conditions.append(slot_instances.c.location_id == location_id)
-        if service_id:
-            conditions.append(slot_instances.c.service_id == service_id)
-        if stylist_id is not None:
-            conditions.append(slot_instances.c.stylist_id == stylist_id)
+        if person_id is not None:
+            conditions.append(slot_instances.c.person_id == person_id)
         if for_date:
             conditions.append(slot_instances.c.date == for_date)
         if start_date:
@@ -291,14 +252,14 @@ class DatabaseStore:
                     .values(
                         id=rule.id,
                         location_id=rule.location_id,
-                        stylist_id=rule.stylist_id,
-                        service_id=rule.service_id,
+                        person_id=rule.person_id,
                         rule_kind=rule.rule_kind,
                         days_of_week=list(rule.days_of_week) if rule.days_of_week else None,
                         start_time=rule.start_time,
                         end_time=rule.end_time,
                         slot_capacity=rule.slot_capacity,
                         slot_granularity_minutes=rule.slot_granularity_minutes,
+                        slot_duration_minutes=rule.slot_duration_minutes,
                         valid_from=rule.valid_from,
                         valid_to=rule.valid_to,
                         is_closed=rule.is_closed,
@@ -306,14 +267,14 @@ class DatabaseStore:
                     .on_conflict_do_update(
                         index_elements=[availability_rules.c.id],
                         set_={
-                            "stylist_id": rule.stylist_id,
-                            "service_id": rule.service_id,
+                            "person_id": rule.person_id,
                             "rule_kind": rule.rule_kind,
                             "days_of_week": list(rule.days_of_week) if rule.days_of_week else None,
                             "start_time": rule.start_time,
                             "end_time": rule.end_time,
                             "slot_capacity": rule.slot_capacity,
                             "slot_granularity_minutes": rule.slot_granularity_minutes,
+                            "slot_duration_minutes": rule.slot_duration_minutes,
                             "valid_from": rule.valid_from,
                             "valid_to": rule.valid_to,
                             "is_closed": rule.is_closed,
@@ -339,8 +300,7 @@ class DatabaseStore:
                     .values(
                         id=slot.id,
                         location_id=slot.location_id,
-                        service_id=slot.service_id,
-                        stylist_id=slot.stylist_id,
+                        person_id=slot.person_id,
                         date=slot.date,
                         start_at=slot.start_at,
                         end_at=slot.end_at,
@@ -358,13 +318,12 @@ class DatabaseStore:
                     return True, _map_slot(inserted)
                 conditions = [
                     slot_instances.c.location_id == slot.location_id,
-                    slot_instances.c.service_id == slot.service_id,
                     slot_instances.c.start_at == slot.start_at,
                 ]
-                if slot.stylist_id is None:
-                    conditions.append(slot_instances.c.stylist_id.is_(None))
+                if slot.person_id is None:
+                    conditions.append(slot_instances.c.person_id.is_(None))
                 else:
-                    conditions.append(slot_instances.c.stylist_id == slot.stylist_id)
+                    conditions.append(slot_instances.c.person_id == slot.person_id)
                 existing_stmt = select(slot_instances).where(*conditions)
                 existing_result = await session.execute(existing_stmt)
                 existing_row = existing_result.mappings().first()
@@ -518,8 +477,7 @@ class DatabaseStore:
                     bookings.c.source,
                     slot_instances.c.id.label("slot_id"),
                     slot_instances.c.location_id,
-                    slot_instances.c.service_id,
-                    slot_instances.c.stylist_id,
+                    slot_instances.c.person_id,
                     slot_instances.c.date,
                     slot_instances.c.start_at,
                     slot_instances.c.end_at,
@@ -552,8 +510,7 @@ class DatabaseStore:
             slot_data = {
                 "id": row["slot_id"],
                 "location_id": row["location_id"],
-                "service_id": row["service_id"],
-                "stylist_id": row["stylist_id"],
+                "person_id": row["person_id"],
                 "date": row["date"],
                 "start_at": row["start_at"],
                 "end_at": row["end_at"],
@@ -763,8 +720,7 @@ def _map_slot(row: dict) -> SlotInstance:
     return SlotInstance(
         id=str(row["id"]),
         location_id=str(row["location_id"]),
-        service_id=str(row["service_id"]),
-        stylist_id=str(row["stylist_id"]) if row["stylist_id"] else None,
+        person_id=str(row["person_id"]) if row.get("person_id") else None,
         date=row["date"],
         start_at=row["start_at"],
         end_at=row["end_at"],
@@ -804,14 +760,14 @@ def _map_rule(row: dict) -> AvailabilityRule:
     return AvailabilityRule(
         id=str(row["id"]),
         location_id=str(row["location_id"]),
-        stylist_id=str(row["stylist_id"]) if row.get("stylist_id") else None,
-        service_id=str(row["service_id"]) if row.get("service_id") else None,
+        person_id=str(row["person_id"]) if row.get("person_id") else None,
         rule_kind=row["rule_kind"],
         days_of_week=days_seq,
         start_time=row["start_time"],
         end_time=row["end_time"],
         slot_capacity=row["slot_capacity"],
         slot_granularity_minutes=row["slot_granularity_minutes"],
+        slot_duration_minutes=row["slot_duration_minutes"],
         valid_from=row.get("valid_from"),
         valid_to=row.get("valid_to"),
         is_closed=bool(row["is_closed"]),
