@@ -61,21 +61,21 @@ def _deterministic_shuffle(slots: List[SlotInstance], seed: int) -> List[SlotIns
     return cloned
 
 
-def _rand_choice(seed: int) -> float:
-    rng = random.Random(seed)
-    return rng.random()
-
-
-def _clamp_exposure_count(total_available: int, seed: int) -> int:
-    if total_available <= 5:
+def _clamp_exposure_count(
+    total_available: int,
+    seed: int,
+    *,
+    min_slots: int,
+    max_slots: int,
+) -> int:
+    upper_bound = min(total_available, max_slots)
+    if total_available <= min_slots:
         return total_available
-    base = 3
-    first_roll = _rand_choice(seed)
-    if first_roll < 0.15:
-        return 4
-    if first_roll < 0.30:
-        return 5
-    return base
+    if upper_bound <= min_slots:
+        return upper_bound
+    rng = random.Random(seed)
+    # Choose a deterministic count within the configured window.
+    return rng.choice(list(range(min_slots, upper_bound + 1)))
 
 
 def _group_by_day_part(slots: Iterable[SlotInstance], tz: ZoneInfo) -> Dict[str, List[SlotInstance]]:
@@ -92,12 +92,13 @@ def select_exposed_slots(
     location_timezone: str,
     user_key: str,
     date_key: str,
-    service_key: str,
-    stylist_key: str,
+    person_key: str,
     cache_ttl_seconds: int = 420,
+    min_slots: int = 2,
+    max_slots: int = 5,
 ) -> List[SlotInstance]:
     now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
-    cache_key = f"expose:{user_key}:{date_key}:{service_key}:{stylist_key or 'all'}"
+    cache_key = f"expose:{user_key}:{date_key}:{person_key or 'all'}:{min_slots}-{max_slots}"
     cached = cache.get(cache_key, now)
     if cached:
         slot_map = {slot.id: slot for slot in slots}
@@ -106,10 +107,11 @@ def select_exposed_slots(
             return preserved
 
     tz = ZoneInfo(location_timezone)
-    seed = _seed_value(user_key, date_key, service_key, stylist_key or "all", str(now.hour))
+    seed = _seed_value(user_key, date_key, person_key or "all", str(now.hour), str(min_slots), str(max_slots))
     shuffled = _deterministic_shuffle(slots, seed)
     total = len(shuffled)
-    k = min(total, max(2, min(5, _clamp_exposure_count(total, seed))))
+    k = _clamp_exposure_count(total, seed, min_slots=min_slots, max_slots=max_slots)
+    k = max(1, min(k, total))
 
     buckets = _group_by_day_part(shuffled, tz)
     pick: List[SlotInstance] = []
