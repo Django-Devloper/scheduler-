@@ -92,12 +92,11 @@ def select_exposed_slots(
     location_timezone: str,
     user_key: str,
     date_key: str,
-    service_key: str,
-    stylist_key: str,
+    person_key: str,
     cache_ttl_seconds: int = 420,
 ) -> List[SlotInstance]:
     now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
-    cache_key = f"expose:{user_key}:{date_key}:{service_key}:{stylist_key or 'all'}"
+    cache_key = f"expose:{user_key}:{date_key}:{person_key or 'all'}"
     cached = cache.get(cache_key, now)
     if cached:
         slot_map = {slot.id: slot for slot in slots}
@@ -106,7 +105,7 @@ def select_exposed_slots(
             return preserved
 
     tz = ZoneInfo(location_timezone)
-    seed = _seed_value(user_key, date_key, service_key, stylist_key or "all", str(now.hour))
+    seed = _seed_value(user_key, date_key, person_key or "all", str(now.hour))
     shuffled = _deterministic_shuffle(slots, seed)
     total = len(shuffled)
     k = min(total, max(2, min(5, _clamp_exposure_count(total, seed))))
