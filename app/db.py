@@ -10,8 +10,8 @@ from .models import metadata, SCHEDULER_SCHEMA
 
 
 def _default_database_url() -> str:
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "postgres")
+    user = os.getenv("POSTGRES_USER", "scheduler")
+    password = os.getenv("POSTGRES_PASSWORD", "scheduler")
     host = os.getenv("POSTGRES_HOST", "localhost")
     port = os.getenv("POSTGRES_PORT", "5432")
     db_name = os.getenv("POSTGRES_DB", "scheduler")

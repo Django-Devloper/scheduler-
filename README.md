@@ -42,6 +42,11 @@ cp .env.example .env
 
 The defaults match the Docker Compose configuration (`postgresql+asyncpg://scheduler:scheduler@localhost:5432/scheduler`).
 
+> **Troubleshooting:** If you see `asyncpg.exceptions.InvalidPasswordError` during application startup, double-check that your
+> database user/password match either the values in `.env` or the individual `POSTGRES_*` overrides. The docker-compose
+> service and the built-in defaults both use `scheduler/scheduler`; adjust either the database user or the environment variables
+> to keep them aligned.
+
 ### 3. Install dependencies
 
 ```bash
