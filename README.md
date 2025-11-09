@@ -13,11 +13,36 @@ A production-grade scheduling platform for a multi-location hair stylist brand. 
 
 ## Getting Started
 
-The repository now includes a single FastAPI application that exposes the public and admin APIs described in the architecture
-spec. The service runs entirely in memory, making it easy to experiment with slot exposure behaviour and the hold → confirm
-workflow.
+The FastAPI service now persists availability, slots, and bookings in PostgreSQL under a dedicated `scheduler` schema while
+referencing shared `public.auth_user` and `public.biz_entity` tables for user and business metadata. The app automatically
+creates the schema and tables at startup, so the only prerequisite is access to a PostgreSQL instance.
 
-### Install dependencies
+### 1. Start PostgreSQL locally
+
+Launch a development database with Docker Compose (feel free to adjust credentials as needed):
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+```
+
+The compose file provisions a `scheduler` database with the username/password `scheduler/scheduler` and forwards port 5432.
+
+> **Note**
+> The application expects the shared tables `public.auth_user` and `public.biz_entity` to exist. For local development you can
+> create lightweight stand-ins by running `psql -f sql/local_setup.sql` against your database. Production deployments should
+> rely on the real authentication/business tables that already live in the `public` schema.
+
+### 2. Configure environment variables
+
+Copy the example environment file and update it if you customised credentials:
+
+```bash
+cp .env.example .env
+```
+
+The defaults match the Docker Compose configuration (`postgresql+asyncpg://scheduler:scheduler@localhost:5432/scheduler`).
+
+### 3. Install dependencies
 
 ```bash
 python -m venv .venv
@@ -25,14 +50,34 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Run the API server
+### 4. Run the API server
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --env-file .env
 ```
 
-When the server starts it bootstraps sample data (a location, service, stylist, and availability rule). Use the admin slot
-generation endpoint to materialise slots before calling the public APIs.
+On startup the API will create the `scheduler` schema (if needed) and run the DDL for `locations`, `services`, `stylists`,
+`availability_rules`, `slot_instances`, `bookings`, and `idempotency_keys`. Use the admin endpoints to load availability rules
+and generate slot instances after seeding any required reference data.
+
+### 5. Seed sample scheduler data (optional)
+
+With the database running you can insert placeholder business data and a scheduler location to try the endpoints quickly:
+
+```sql
+-- Example: seed via psql
+INSERT INTO public.biz_entity (id, name) VALUES ('00000000-0000-0000-0000-000000000001', 'Downtown Studio')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO public.auth_user (id, email) VALUES ('00000000-0000-0000-0000-0000000000aa', 'admin@example.com')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO scheduler.locations (id, biz_entity_id, name, timezone)
+VALUES ('00000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000001', 'Downtown Studio', 'Asia/Dubai')
+ON CONFLICT DO NOTHING;
+```
+
+After creating a location you can POST availability rules and generate slots via the admin API just as in production.
 
 ### Explore the API documentation
 
@@ -41,6 +86,6 @@ generation endpoint to materialise slots before calling the public APIs.
 - Raw OpenAPI document: http://localhost:8000/openapi.yaml
 
 ## Next Steps
-- Replace the in-memory store with persistent services (PostgreSQL, Redis, message bus) per the architecture doc.
+- Add Redis-backed idempotency caches, hold TTL tracking, and exposure stickiness per the architecture doc.
 - Add automated tests covering slot fairness, concurrency, expiry, and RBAC protections.
 - Integrate observability (metrics, logs, tracing) and rate limiting within the API gateway.

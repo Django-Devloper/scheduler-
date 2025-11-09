@@ -29,7 +29,17 @@ from .schemas import (
     SlotGenerationRequest,
     SlotGenerationResponse,
 )
-from .store import AvailabilityRule, Booking, SlotInstance, store
+from .store import (
+    AvailabilityRule,
+    HoldExpiredError,
+    NotFoundError,
+    SlotFullError,
+    SlotInstance,
+    Location,
+    BookingWithSlot,
+    Service,
+    store,
+)
 
 tags_metadata = [
     {
@@ -56,6 +66,11 @@ app = FastAPI(
 )
 
 
+@app.on_event("startup")
+async def startup_event() -> None:
+    await store.initialize()
+
+
 async def get_idempotency_key(idempotency_key: str = Header(..., alias="Idempotency-Key")) -> str:
     return idempotency_key
 
@@ -78,9 +93,15 @@ async def get_dates(
     service_id: Optional[str] = Query(default=None),
     stylist_id: Optional[str] = Query(default=None),
 ):
-    store.expire_holds()
+    await store.expire_holds()
     to_date = from_date + timedelta(days=days)
-    slots = store.all_slots()
+    slots = await store.list_slots(
+        location_id=location_id,
+        service_id=service_id,
+        stylist_id=stylist_id,
+        start_date=from_date,
+        end_date=to_date,
+    )
     results: list[DateAvailabilityResponseItem] = []
     for offset in range((to_date - from_date).days + 1):
         day = from_date + timedelta(days=offset)
@@ -88,11 +109,8 @@ async def get_dates(
             slot
             for slot in slots
             if slot.date == day
-            and (not location_id or slot.location_id == location_id)
-            and (not service_id or slot.service_id == service_id)
-            and (stylist_id is None or slot.stylist_id == stylist_id)
         ]
-        available = [s for s in filtered if _remaining_capacity(s) > 0]
+        available = [s for s in filtered if _remaining_capacity(s) > 0 and s.status != "blocked"]
         results.append(
             DateAvailabilityResponseItem(
                 date=day,
@@ -111,16 +129,16 @@ async def get_slots(
     request: Request,
     query: SlotExposureQuery = Depends(),
 ):
-    store.expire_holds()
+    await store.expire_holds()
     try:
-        location = store.get_location(query.location_id)
-        store.get_service(query.service_id)
+        location = await store.get_location(query.location_id)
+        await store.get_service(query.service_id)
         if query.stylist_id is not None:
-            store.get_stylist(query.stylist_id)
-    except KeyError as exc:
+            await store.get_stylist(query.stylist_id)
+    except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    slots = store.list_slots(
+    slots = await store.list_slots(
         location_id=query.location_id,
         service_id=query.service_id,
         stylist_id=query.stylist_id,
@@ -179,8 +197,8 @@ async def create_booking(
     idempotency_key: str = Depends(get_idempotency_key),
     request: Request = None,
 ):
-    store.expire_holds()
-    existing = store.get_idempotent_booking(idempotency_key)
+    await store.expire_holds()
+    existing = await store.get_idempotent_booking(idempotency_key)
     if existing:
         return BookingResponse(
             booking_id=existing.id,
@@ -188,42 +206,29 @@ async def create_booking(
             slot_id=existing.slot_id,
             hold_expires_at=existing.hold_expires_at,
         )
+    hold_ttl = timedelta(minutes=10)
     try:
-        slot = store.find_slot(booking_request.slot_id)
-    except KeyError as exc:
+        booking = await store.create_booking_hold(
+            slot_id=booking_request.slot_id,
+            idempotency_key=idempotency_key,
+            user_id=request.headers.get("X-User-Id") if request else None,
+            customer_name=booking_request.customer.name,
+            customer_phone=booking_request.customer.phone,
+            customer_email=booking_request.customer.email,
+            notes=booking_request.notes,
+            consent=booking_request.consent,
+            source=booking_request.source,
+            hold_ttl=hold_ttl,
+        )
+    except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-    remaining = _remaining_capacity(slot)
-    if remaining <= 0:
+    except SlotFullError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "SLOT_FULL", "message": "Selected time is no longer available."},
         )
-
-    hold_ttl = timedelta(minutes=10)
-    now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
-    booking_id = str(uuid.uuid4())
-    booking = Booking(
-        id=booking_id,
-        slot_id=slot.id,
-        user_id=request.headers.get("X-User-Id") if request else None,
-        customer_name=booking_request.customer.name,
-        customer_phone=booking_request.customer.phone,
-        customer_email=booking_request.customer.email,
-        notes=booking_request.notes,
-        status="held",
-        hold_expires_at=now + hold_ttl,
-        created_at=now,
-        consent=booking_request.consent,
-        source=booking_request.source,
-    )
-    slot.hold += 1
-    slot.refresh_status()
-    store.update_slot(slot)
-    store.upsert_booking(booking)
-    store.set_idempotency(idempotency_key, booking_id)
     return BookingResponse(
-        booking_id=booking_id,
+        booking_id=booking.id,
         status=booking.status,
         slot_id=booking.slot_id,
         hold_expires_at=booking.hold_expires_at,
@@ -236,26 +241,15 @@ async def create_booking(
     tags=["User"],
 )
 async def confirm_booking(booking_id: str):
-    store.expire_holds()
+    await store.expire_holds()
     try:
-        booking = store.get_booking(booking_id)
-        slot = store.find_slot(booking.slot_id)
-    except KeyError as exc:
+        booking = await store.confirm_booking(booking_id)
+    except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-    if booking.status != "held":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Booking is not in held state")
-    if booking.hold_expires_at and booking.hold_expires_at <= datetime.utcnow().replace(tzinfo=ZoneInfo("UTC")):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Hold already expired")
-
-    slot.hold = max(0, slot.hold - 1)
-    slot.booked += 1
-    slot.refresh_status()
-    store.update_slot(slot)
-
-    booking.status = "confirmed"
-    booking.confirmed_at = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
-    store.upsert_booking(booking)
+    except HoldExpiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return BookingConfirmResponse(booking_id=booking.id, status=booking.status, slot_id=booking.slot_id)
 
 
@@ -267,12 +261,12 @@ async def confirm_booking(booking_id: str):
 )
 async def create_availability_rule(payload: AvailabilityRulePayload):
     try:
-        store.get_location(payload.location_id)
+        await store.get_location(payload.location_id)
         if payload.service_id:
-            store.get_service(payload.service_id)
+            await store.get_service(payload.service_id)
         if payload.stylist_id:
-            store.get_stylist(payload.stylist_id)
-    except KeyError as exc:
+            await store.get_stylist(payload.stylist_id)
+    except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     rule_id = str(uuid.uuid4())
     availability_rule = AvailabilityRule(
@@ -290,7 +284,7 @@ async def create_availability_rule(payload: AvailabilityRulePayload):
         valid_to=payload.valid_to,
         is_closed=payload.is_closed,
     )
-    store.add_availability_rule(availability_rule)
+    await store.add_availability_rule(availability_rule)
     return AvailabilityRuleResponse(rule_id=rule_id)
 
 
@@ -300,10 +294,13 @@ async def create_availability_rule(payload: AvailabilityRulePayload):
     tags=["Admin"],
 )
 async def generate_slots(payload: SlotGenerationRequest):
-    if payload.location_id not in store.locations:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="location not found")
-    created, skipped = _generate_slots_for_range(
+    try:
+        location = await store.get_location(payload.location_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    created, skipped = await _generate_slots_for_range(
         location_id=payload.location_id,
+        location_timezone=location.timezone,
         start_date=payload.from_date,
         end_date=payload.to_date,
         dry_run=payload.dry_run,
@@ -323,13 +320,19 @@ async def list_bookings(
     date_to: Optional[date] = Query(default=None, alias="date_to"),
     q: Optional[str] = None,
 ):
-    store.expire_holds()
-    bookings = store.list_bookings()
-    filtered = []
-    for booking in bookings:
-        slot = store.slot_instances.get(booking.slot_id)
-        if not slot:
+    await store.expire_holds()
+    records = await store.list_bookings()
+    location_ids = {record.slot.location_id for record in records}
+    locations_cache: dict[str, Location] = {}
+    for loc_id in location_ids:
+        try:
+            locations_cache[loc_id] = await store.get_location(loc_id)
+        except NotFoundError:
             continue
+    filtered: list[BookingWithSlot] = []
+    for record in records:
+        booking = record.booking
+        slot = record.slot
         if status_filter and booking.status != status_filter:
             continue
         if service_id and slot.service_id != service_id:
@@ -344,7 +347,7 @@ async def list_bookings(
             continue
         if q and q not in {booking.customer_phone, booking.customer_email or ""}:
             continue
-        filtered.append((booking, slot))
+        filtered.append(record)
 
     total = len(filtered)
     start_index = (page - 1) * page_size
@@ -352,13 +355,11 @@ async def list_bookings(
     page_items = filtered[start_index:end_index]
 
     items = []
-    for booking, slot in page_items:
-        location = store.locations.get(slot.location_id)
-        start_at = (
-            _to_timezone(slot.start_at, location.timezone)
-            if location
-            else slot.start_at
-        )
+    for record in page_items:
+        booking = record.booking
+        slot = record.slot
+        location = locations_cache.get(slot.location_id)
+        start_at = _to_timezone(slot.start_at, location.timezone) if location else slot.start_at
         items.append(
             BookingListItem(
                 booking_id=booking.id,
@@ -384,56 +385,22 @@ async def list_bookings(
     tags=["Admin"],
 )
 async def update_booking(booking_id: str, payload: BookingPatchRequest):
-    store.expire_holds()
-    try:
-        booking = store.get_booking(booking_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
-    slot = store.slot_instances.get(booking.slot_id)
-    if not slot:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="slot not found")
-
+    await store.expire_holds()
     if payload.action == "cancel":
-        if booking.status not in {"held", "confirmed"}:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Booking not cancellable")
-        if booking.status == "held":
-            slot.hold = max(0, slot.hold - 1)
-        elif booking.status == "confirmed":
-            slot.booked = max(0, slot.booked - 1)
-        booking.status = "cancelled"
-        booking.cancelled_at = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
-        slot.refresh_status()
-        store.update_slot(slot)
-        store.upsert_booking(booking)
+        try:
+            booking = await store.cancel_booking(booking_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         return BookingPatchResponse(booking_id=booking.id, status=booking.status, slot_id=booking.slot_id)
 
-    # reschedule
     try:
-        new_slot = store.find_slot(payload.new_slot_id)
-    except KeyError as exc:
+        booking = await store.reschedule_booking(booking_id, payload.new_slot_id)
+    except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    if _remaining_capacity(new_slot) <= 0:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="New slot has no capacity")
-
-    # release old slot
-    if booking.status == "held":
-        slot.hold = max(0, slot.hold - 1)
-    elif booking.status == "confirmed":
-        slot.booked = max(0, slot.booked - 1)
-    slot.refresh_status()
-    store.update_slot(slot)
-
-    # reserve new slot depending on status
-    if booking.status == "held":
-        new_slot.hold += 1
-    elif booking.status == "confirmed":
-        new_slot.booked += 1
-    new_slot.refresh_status()
-    store.update_slot(new_slot)
-
-    booking.slot_id = new_slot.id
-    store.upsert_booking(booking)
+    except SlotFullError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return BookingPatchResponse(booking_id=booking.id, status=booking.status, slot_id=booking.slot_id)
 
 
@@ -479,15 +446,32 @@ def _daterange(start: date, end: date):
         current += timedelta(days=1)
 
 
-def _generate_slots_for_range(
-    *, location_id: str, start_date: date, end_date: date, dry_run: bool = False
-):
+async def _generate_slots_for_range(
+    *,
+    location_id: str,
+    location_timezone: str,
+    start_date: date,
+    end_date: date,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    rules = await store.list_availability_rules(location_id)
+    if not rules:
+        return 0, 0
+    existing_slots = await store.list_slots(
+        location_id=location_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    existing_index = {
+        (slot.service_id, slot.stylist_id, slot.start_at): slot for slot in existing_slots
+    }
+    services_cache: dict[str, Service] = {}
+    tz = ZoneInfo(location_timezone)
+    utc = ZoneInfo("UTC")
     created = 0
     skipped = 0
     for single_date in _daterange(start_date, end_date):
-        for rule in store.availability_rules.values():
-            if rule.location_id != location_id:
-                continue
+        for rule in rules:
             if rule.valid_from and single_date < rule.valid_from:
                 continue
             if rule.valid_to and single_date > rule.valid_to:
@@ -496,60 +480,47 @@ def _generate_slots_for_range(
                 continue
             if rule.is_closed:
                 continue
-            location = store.locations.get(rule.location_id)
-            if not location:
+            if not rule.service_id:
                 continue
-            service_id = rule.service_id
-            if not service_id:
-                continue
-            duration = store.get_service(service_id).duration_minutes
-            tz = ZoneInfo(location.timezone)
+            service = services_cache.get(rule.service_id)
+            if service is None:
+                service = await store.get_service(rule.service_id)
+                services_cache[rule.service_id] = service
+            duration = service.duration_minutes
             start_dt_local = datetime.combine(single_date, rule.start_time, tzinfo=tz)
             end_dt_local = datetime.combine(single_date, rule.end_time, tzinfo=tz)
             cursor = start_dt_local
             while cursor + timedelta(minutes=duration) <= end_dt_local:
-                cursor_utc = cursor.astimezone(ZoneInfo("UTC"))
-                if dry_run:
-                    exists = any(
-                        slot.location_id == rule.location_id
-                        and slot.service_id == service_id
-                        and slot.stylist_id == rule.stylist_id
-                        and slot.start_at == cursor_utc
-                        for slot in store.slot_instances.values()
-                    )
-                    if exists:
-                        skipped += 1
-                    else:
-                        created += 1
+                start_utc = cursor.astimezone(utc)
+                end_utc = (cursor + timedelta(minutes=duration)).astimezone(utc)
+                key = (rule.service_id, rule.stylist_id, start_utc)
+                if key in existing_index:
+                    skipped += 1
                 else:
-                    slot_id = str(uuid.uuid4())
-                    slot = SlotInstance(
-                        id=slot_id,
-                        location_id=rule.location_id,
-                        service_id=service_id,
-                        stylist_id=rule.stylist_id,
-                        date=single_date,
-                        start_at=cursor_utc,
-                        end_at=(cursor + timedelta(minutes=duration)).astimezone(ZoneInfo("UTC")),
-                        capacity=rule.slot_capacity,
-                    )
-                    created_flag, _ = store.add_slot_instance(slot)
-                    if created_flag:
+                    if dry_run:
                         created += 1
                     else:
-                        skipped += 1
+                        slot = SlotInstance(
+                            id=str(uuid.uuid4()),
+                            location_id=rule.location_id,
+                            service_id=rule.service_id,
+                            stylist_id=rule.stylist_id,
+                            date=single_date,
+                            start_at=start_utc,
+                            end_at=end_utc,
+                            capacity=rule.slot_capacity,
+                            booked=0,
+                            hold=0,
+                            status="open",
+                        )
+                        created_flag, persisted = await store.add_slot_instance(slot)
+                        if created_flag:
+                            created += 1
+                            existing_index[key] = persisted
+                        else:
+                            skipped += 1
                 cursor += timedelta(minutes=rule.slot_granularity_minutes)
     return created, skipped
-
-
-def _bootstrap_slots() -> None:
-    location_id, _, _ = store.ensure_seed_data()
-    _generate_slots_for_range(
-        location_id=location_id,
-        start_date=date.today(),
-        end_date=date.today() + timedelta(days=14),
-        dry_run=False,
-    )
 
 
 @app.exception_handler(ValueError)
@@ -557,4 +528,3 @@ async def value_error_handler(_: Request, exc: ValueError):
     return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)})
 
 
-_bootstrap_slots()
