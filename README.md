@@ -16,7 +16,8 @@ A production-grade scheduling platform that can be embedded into any application
 ### Run with Docker
 
 The repository ships with a production-ready Dockerfile and compose stack. Build and
-launch the API together with PostgreSQL by running:
+launch the API together with PostgreSQL by running (the compose file pins the project
+name to `scheduler` so the generated image tags stay valid across hosts):
 
 ```bash
 docker compose up --build
