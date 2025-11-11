@@ -13,9 +13,22 @@ A production-grade scheduling platform that can be embedded into any application
 
 ## Getting Started
 
-The FastAPI service now persists availability, slots, and bookings in PostgreSQL under a dedicated `scheduler` schema while
-referencing shared `public.auth_user` and `public.biz_entity` tables for user and business metadata. The app automatically
-creates the schema and tables at startup, so the only prerequisite is access to a PostgreSQL instance.
+### Run with Docker
+
+The repository ships with a production-ready Dockerfile and compose stack that run
+FastAPI behind Gunicorn's Uvicorn workers. Build and launch the API together with
+PostgreSQL by running:
+
+```bash
+docker compose up --build
+```
+
+The compose file tags the API image explicitly as `scheduler/api:latest`, so Docker never
+derives an invalid repository name from the checkout directory. It also exposes the API
+on port `8000` and PostgreSQL on `5432`. Update the database credentials in `.env`
+(or override `DATABASE_URL` in the compose file) if you need to customise them for your
+deployment target. Adjust the number of Gunicorn workers via `WEB_CONCURRENCY` if you
+need more throughput.
 
 ### 1. Start PostgreSQL locally
 
@@ -26,11 +39,6 @@ docker compose -f docker-compose.local.yml up -d
 ```
 
 The compose file provisions a `scheduler` database with the username/password `scheduler/scheduler` and forwards port 5432.
-
-> **Note**
-> The application expects the shared tables `public.auth_user` and `public.biz_entity` to exist. For local development you can
-> create lightweight stand-ins by running `psql -f sql/local_setup.sql` against your database. Production deployments should
-> rely on the real authentication/business tables that already live in the `public` schema.
 
 ### 2. Configure environment variables
 
