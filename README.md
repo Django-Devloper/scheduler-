@@ -13,9 +13,26 @@ A production-grade scheduling platform that can be embedded into any application
 
 ## Getting Started
 
+### Run with Docker
+
+The repository ships with a production-ready Dockerfile and compose stack. Build and
+launch the API together with PostgreSQL by running:
+
+```bash
+docker compose up --build
+```
+
+The compose file tags the API image explicitly as `scheduler/api:latest`, so Docker never
+derives an invalid repository name from the checkout directory. It also exposes the API
+on port `8000` and PostgreSQL on `5432`. Update the
+database credentials in `.env` (or override `DATABASE_URL` in the compose file) if you
+need to customise them for your deployment target.
+
 The FastAPI service now persists availability, slots, and bookings in PostgreSQL under a dedicated `scheduler` schema while
-referencing shared `public.auth_user` and `public.biz_entity` tables for user and business metadata. The app automatically
-creates the schema and tables at startup, so the only prerequisite is access to a PostgreSQL instance.
+referencing shared `public.auth_user` and `public.biz_entity` tables for user and business metadata. For greenfield
+deployments (like Docker Compose) the API creates lightweight stand-ins for those shared tables automatically before running
+its own migrations, so startup succeeds even against an empty PostgreSQL instance. Production environments that already have
+the canonical tables in place are unaffected because the app uses `CREATE TABLE IF NOT EXISTS` guards.
 
 ### 1. Start PostgreSQL locally
 
@@ -28,9 +45,9 @@ docker compose -f docker-compose.local.yml up -d
 The compose file provisions a `scheduler` database with the username/password `scheduler/scheduler` and forwards port 5432.
 
 > **Note**
-> The application expects the shared tables `public.auth_user` and `public.biz_entity` to exist. For local development you can
-> create lightweight stand-ins by running `psql -f sql/local_setup.sql` against your database. Production deployments should
-> rely on the real authentication/business tables that already live in the `public` schema.
+> When the API starts against a fresh database it creates minimal `public.auth_user` and `public.biz_entity` tables on the fly so
+> the scheduler schema can enforce its foreign keys. If your platform maintains richer tables for users or business entities,
+> ensure they exist before launching the scheduler service and the bootstrap logic will skip creating the placeholders.
 
 ### 2. Configure environment variables
 

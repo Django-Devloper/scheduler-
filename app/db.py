@@ -91,6 +91,36 @@ async def initialize_schema() -> None:
     - Creates all tables defined in `metadata`
     """
     async with engine.begin() as conn:
+        # 0) Provide local-development stand-ins for shared reference tables so
+        # the scheduler schema can create foreign keys even when running against
+        # a brand-new PostgreSQL instance. In production these tables already
+        # exist in the public schema and the IF NOT EXISTS guard turns the
+        # statements into no-ops.
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS public.biz_entity (
+                    id UUID PRIMARY KEY,
+                    name TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS public.auth_user (
+                    id UUID PRIMARY KEY,
+                    email TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
+
         # 1) Create schema if missing
         await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEDULER_SCHEMA}"'))
 
