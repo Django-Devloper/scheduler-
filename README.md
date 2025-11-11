@@ -16,14 +16,15 @@ A production-grade scheduling platform that can be embedded into any application
 ### Run with Docker
 
 The repository ships with a production-ready Dockerfile and compose stack. Build and
-launch the API together with PostgreSQL by running (the compose file pins the project
-name to `scheduler` so the generated image tags stay valid across hosts):
+launch the API together with PostgreSQL by running:
 
 ```bash
 docker compose up --build
 ```
 
-The compose file exposes the API on port `8000` and PostgreSQL on `5432`. Update the
+The compose file tags the API image explicitly as `scheduler/api:latest`, so Docker never
+derives an invalid repository name from the checkout directory. It also exposes the API
+on port `8000` and PostgreSQL on `5432`. Update the
 database credentials in `.env` (or override `DATABASE_URL` in the compose file) if you
 need to customise them for your deployment target.
 
